@@ -6,7 +6,7 @@ import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { boardConfigSchema, parseMachineHost, type BoardConfig, type HealthCheck } from '../shared/schema.js';
-import { configPath, initConfig, loadConfig } from '../server/config.js';
+import { initConfig, loadConfig } from '../server/config.js';
 import { HealthEngine } from '../server/health.js';
 import { BoardService } from '../server/service.js';
 import { buildServer } from '../server/http.js';
@@ -26,6 +26,8 @@ class FakeBackend implements ProbeBackend {
   async run(context: ProbeContext) { return this.probe(context); }
 }
 const local = (config: BoardConfig) => config.machines[0];
+const cliEntry = resolve('server/cli.ts');
+const tsxCli = resolve('node_modules/tsx/dist/cli.mjs');
 const setup = (config = clone(), backend: ProbeBackend = new FakeBackend()) => {
   const health = new HealthEngine(config, backend);
   return { health, service: new BoardService(health) };
@@ -286,7 +288,7 @@ describe('probes', () => {
 });
 
 // 扩展与守护进程都按同一约定拉起 CLI：测试里用 tsx 跑源码。
-process.env.COMPUTER_BOARD_CLI = `${process.execPath} ${resolve('node_modules/tsx/dist/cli.mjs')} ${resolve('server/cli.ts')}`;
+process.env.COMPUTER_BOARD_CLI = `${process.execPath} ${tsxCli} ${cliEntry}`;
 
 type PiTool = Parameters<Parameters<typeof computerBoardExtension>[0]['registerTool']>[0];
 type ToolResult = { content: unknown[]; details?: unknown; isError?: boolean };
@@ -422,7 +424,7 @@ describe('pi extension', () => {
 
 describe('CLI', () => {
   const cli = (args: string[], env: NodeJS.ProcessEnv) => execFileSync(process.execPath,
-    [resolve('node_modules/tsx/dist/cli.mjs'), resolve('server/cli.ts'), ...args],
+    [tsxCli, cliEntry, ...args],
     { cwd: resolve('.'), env: { ...process.env, ...env }, encoding: 'utf8' });
 
   it('validates the example configuration', () => {
