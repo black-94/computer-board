@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdir, rename, open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ZodError } from 'zod';
 import { boardConfigSchema, type BoardConfig } from '../shared/schema.js';
 
 /** 配置默认位置：~/.computer/config.json，可用 COMPUTER_BOARD_CONFIG 覆盖。 */
@@ -22,7 +23,16 @@ export function exampleConfigPath() {
 }
 
 export async function loadConfig(path = configPath()): Promise<BoardConfig> {
-  return boardConfigSchema.parse(JSON.parse(await readFile(path, 'utf8')));
+  let raw: string;
+  try { raw = await readFile(path, 'utf8'); }
+  catch { throw new Error(`读取配置失败：${path}（先运行 computer-board init 创建）`); }
+  try { return boardConfigSchema.parse(JSON.parse(raw)); }
+  catch (error) {
+    const detail = error instanceof ZodError
+      ? error.issues.map(issue => `${issue.path.join('.') || 'config'}: ${issue.message}`).join('; ')
+      : error instanceof Error ? error.message : '未知错误';
+    throw new Error(`配置无效：${path}：${detail}`);
+  }
 }
 
 /** 从配置样例创建配置文件；文件已存在时不做任何改动。 */

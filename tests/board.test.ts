@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { boardConfigSchema, parseMachineHost, type BoardConfig, type HealthCheck } from '../shared/schema.js';
@@ -10,7 +12,8 @@ import { BoardService } from '../server/service.js';
 import { buildServer } from '../server/http.js';
 import { QueryError } from '../server/errors.js';
 import { DefaultProbeBackend, type ProbeBackend, type ProbeContext, type ProbeResult } from '../server/probes.js';
-import computerBoardExtension, { configPath as extensionConfigPath, serverUrl } from '../extension/index.js';
+import computerBoardExtension, { configPath as extensionConfigPath, ensureCommand, serverBase } from '../extension/index.js';
+import { address, baseUrl, ensureDaemon, launchLockPath, probe, readState, stopDaemon } from '../server/daemon.js';
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
@@ -282,30 +285,138 @@ describe('probes', () => {
   });
 });
 
-describe('pi extension', () => {
-  it('registers the HTTP MCP server taken from the configuration file', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'computer-board-extension-'));
-    const file = join(directory, 'config.json');
-    const previous = process.env.COMPUTER_BOARD_CONFIG;
+// 扩展与守护进程都按同一约定拉起 CLI：测试里用 tsx 跑源码。
+process.env.COMPUTER_BOARD_CLI = `${process.execPath} ${resolve('node_modules/tsx/dist/cli.mjs')} ${resolve('server/cli.ts')}`;
+
+type PiTool = Parameters<Parameters<typeof computerBoardExtension>[0]['registerTool']>[0];
+type ToolResult = { content: unknown[]; details?: unknown; isError?: boolean };
+
+const payload = (result: ToolResult) => {
+  const text = (result.content as { text?: string }[])[0]?.text;
+  return JSON.parse(text ?? '');
+};
+const withConfig = (file: string, run: () => Promise<void>) => {
+  const previous = process.env.COMPUTER_BOARD_CONFIG;
+  process.env.COMPUTER_BOARD_CONFIG = file;
+  return run().finally(() => {
+    if (previous === undefined) delete process.env.COMPUTER_BOARD_CONFIG;
+    else process.env.COMPUTER_BOARD_CONFIG = previous;
+  });
+};
+
+const freePort = () => new Promise<number>(resolvePort => {
+  const server = createServer();
+  server.listen(0, '127.0.0.1', () => {
+    const { port } = server.address() as { port: number };
+    server.close(() => resolvePort(port));
+  });
+});
+
+/** 单机 + local 探活、软件无检查的临时配置：探活立即出结果，也覆盖 unknown 软件。 */
+const daemonSetup = async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'computer-board-daemon-'));
+  const file = join(directory, 'config.json');
+  const config = clone();
+  config.server = { host: '127.0.0.1', port: await freePort(), path: '/mcp' };
+  config.machines = [config.machines[0]];
+  config.machines[0].healthChecks = [{ type: 'local', required: true }];
+  config.machines[0].software = config.machines[0].software.map(software => ({ ...software, healthChecks: [] }));
+  await writeFile(file, JSON.stringify(config));
+  return { config, directory, file };
+};
+
+describe('daemon', () => {
+  it('拉起唯一实例：重复 ensure 复用同一进程，stop 后端口与状态一起释放', async () => {
+    const { config, directory, file } = await daemonSetup();
     try {
-      await writeFile(file, JSON.stringify({ server: { host: '127.0.0.1', port: 4321, path: '/mcp' } }));
-      expect(serverUrl(file)).toBe('http://127.0.0.1:4321/mcp');
-      process.env.COMPUTER_BOARD_CONFIG = file;
-      const registered: { name: string; config: Record<string, unknown> }[] = [];
-      computerBoardExtension({ registerMcpServer: (name: string, config: Record<string, unknown>) => { registered.push({ name, config }); } } as never);
-      expect(registered).toEqual([{ name: 'computer-board',
-        config: expect.objectContaining({ type: 'http', url: 'http://127.0.0.1:4321/mcp', exposure: 'direct' }) }]);
+      const first = await ensureDaemon(config, { configFile: file });
+      expect(first.started).toBe(true);
+      expect(first.address).toEqual(address(config));
+      expect(first.state?.pid).toBeGreaterThan(0);
+      expect(await probe(first.address.url)).toBe(true);
+      expect(existsSync(launchLockPath(file))).toBe(false);
+
+      const second = await ensureDaemon(config, { configFile: file });
+      expect(second.started).toBe(false);
+      expect(second.state?.pid).toBe(first.state?.pid);
+
+      expect(await stopDaemon(file)).toBe(true);
+      expect(await probe(first.address.url)).toBe(false);
+      expect(await readState(file)).toBeUndefined();
+      expect(await stopDaemon(file)).toBe(false);
     } finally {
-      if (previous === undefined) delete process.env.COMPUTER_BOARD_CONFIG;
-      else process.env.COMPUTER_BOARD_CONFIG = previous;
+      await stopDaemon(file);
       await rm(directory, { recursive: true, force: true });
     }
   });
 
-  it('falls back to the loopback defaults and reads ~/.computer/config.json', () => {
+  it('并发 ensure 也只拉起一个实例', async () => {
+    const { config, directory, file } = await daemonSetup();
+    try {
+      const results = await Promise.all([
+        ensureDaemon(config, { configFile: file }), ensureDaemon(config, { configFile: file }),
+      ]);
+      expect(results.map(result => result.started).sort()).toEqual([false, true]);
+      const state = await readState(file);
+      expect(state?.pid).toBeGreaterThan(0);
+      expect(results.flatMap(result => result.state ? [result.state.pid] : []).every(pid => pid === state?.pid)).toBe(true);
+      expect(await probe(address(config).url)).toBe(true);
+    } finally {
+      await stopDaemon(file);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('pi extension', () => {
+  it('registers the three read-only tools and starts the service on demand', async () => {
+    const { config, directory, file } = await daemonSetup();
+    try {
+      // 扩展加载时就会按配置拉起服务，所以配置必须在注册前生效。
+      await withConfig(file, async () => {
+        const tools: PiTool[] = [];
+        computerBoardExtension({ registerTool: (tool: PiTool) => { tools.push(tool); } } as never);
+        expect(tools.map(tool => tool.name)).toEqual(['list_machines', 'get_machine', 'get_software']);
+        expect(tools.every(tool => tool.annotations?.readOnlyHint === true)).toBe(true);
+        expect(tools.every(tool => Boolean(tool.description))).toBe(true);
+
+        // 第一次调用把服务拉起来，因此这里不依赖调用前服务已在运行。
+        await tools[0].execute('call-1', {} as never, undefined, undefined, undefined as never);
+        expect(await probe(address(config).url)).toBe(true);
+        await fetch(`${baseUrl(address(config))}/api/health/refresh`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+        });
+
+        const list = await tools[0].execute('call-2', { showAll: false } as never, undefined, undefined, undefined as never);
+        expect(payload(list)).toEqual([{ name: '本机', host: 'localhost', software: [] }]);
+
+        const machine = await tools[1].execute('call-3',
+          { machine: { host: 'localhost' } } as never, undefined, undefined, undefined as never);
+        expect(payload(machine)).toMatchObject({ machineId: 'local', name: '本机', revision: config.revision });
+        expect(machine.details).toMatchObject({ machineId: 'local' });
+
+        const missing = await tools[1].execute('call-4',
+          { machine: { machineId: 'no-such-machine' } } as never, undefined, undefined, undefined as never);
+        expect(missing.isError).toBe(true);
+        expect(payload(missing).error).toEqual({ code: 'NOT_FOUND', message: '未找到机器' });
+
+        const software = await tools[2].execute('call-5',
+          { machine: { machineId: 'local' }, software: { name: 'Node.js' } } as never, undefined, undefined, undefined as never);
+        expect(payload(software)).toMatchObject({ softwareId: 'local-node', healthChecks: [] });
+      });
+    } finally {
+      await stopDaemon(file);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the loopback defaults, ~/.computer/config.json and PATH', () => {
     expect(extensionConfigPath({})).toBe(join(homedir(), '.computer', 'config.json'));
-    expect(serverUrl(join(homedir(), '.computer', 'definitely-missing.json'))).toBe('http://127.0.0.1:3000/mcp');
-    expect(configPath({})).toBe(join(homedir(), '.computer', 'config.json'));
+    expect(extensionConfigPath({ COMPUTER_BOARD_CONFIG: 'relative/config.json' })).toBe(resolve('relative/config.json'));
+    expect(serverBase(join(homedir(), '.computer', 'definitely-missing.json'))).toBe('http://127.0.0.1:3000');
+    expect(ensureCommand({ COMPUTER_BOARD_CLI: '/usr/bin/env node /abs/cli.js' }))
+      .toEqual({ command: '/usr/bin/env', args: ['node', '/abs/cli.js', 'ensure'] });
+    expect(ensureCommand({}).args.at(-1)).toBe('ensure');
   });
 });
 

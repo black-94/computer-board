@@ -19,7 +19,7 @@ export function parseMachineHost(host: string): { hostname: string; username: st
 export const machineHostSchema = text.refine(value => value === 'localhost' || parseMachineHost(value) !== undefined,
   'host 必须是 localhost 或 account@ip:port（IPv6 使用方括号）');
 
-export const checkTypeSchema = z.enum(['local', 'bash']);
+const checkTypeSchema = z.enum(['local', 'bash']);
 export type CheckType = z.infer<typeof checkTypeSchema>;
 
 const checkBase = {
@@ -56,8 +56,6 @@ const rawBoardSchema = z.object({
 export type BoardConfig = z.infer<typeof rawBoardSchema>;
 export type Machine = z.infer<typeof machineSchema>;
 export type Software = z.infer<typeof softwareSchema>;
-export type Defaults = z.infer<typeof defaultsSchema>;
-export type ServerConfig = z.infer<typeof serverSchema>;
 
 export const boardConfigSchema = rawBoardSchema.superRefine((config, ctx) => {
   const ids = new Set<string>();

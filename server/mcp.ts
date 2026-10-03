@@ -14,7 +14,7 @@ const instructions = [
   '错误：返回 { error: { code, message } }，code 为 INVALID_ARGUMENT、NOT_FOUND、AMBIGUOUS（命中多个资源，candidates 中给出 machineId / softwareId）、INTERNAL_ERROR。',
 ].join('\n');
 
-export function createMcpServer(service: BoardService) {
+function createMcpServer(service: BoardService) {
   const server = new McpServer({ name: 'computer-board', version: '1.0.0' }, { instructions });
   server.registerTool('list_machines', {
     description: '机器和软件列表：返回 name、host 与软件名。默认只列探活成功项，showAll=true 时列出全部并附带 status。',

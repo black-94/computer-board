@@ -1,6 +1,6 @@
 # Computer Board
 
-手工维护机器与软件清单、周期性探活、只读查询的后台服务，同时以 HTTP MCP 和 pi extension 两种方式提供给 agent。
+手工维护机器与软件清单、周期性探活、只读查询的后台服务，同时以 HTTP MCP 和 pi extension（三个同名只读工具）提供给 agent。
 
 服务只回答「现在有哪些机器和软件可用、怎么接入」；它不执行任何业务操作，不做 SSH 转发或端口转发，不代理远程调用，也不修改配置。
 
@@ -13,22 +13,26 @@ npm install -g @black942026/computer-board
 computer-board init        # 按样例创建 ~/.computer/config.json，已存在则不改动
 $EDITOR ~/.computer/config.json
 computer-board validate    # 校验配置
-computer-board             # 启动服务，默认 http://127.0.0.1:3000
+computer-board             # 前台启动服务，默认 http://127.0.0.1:3000
+computer-board ensure      # 后台启动服务，已在运行则复用；pi extension 用它自动拉起
+computer-board stop        # 停止后台服务
 ```
+
+同一份配置下服务是单例：`ensure` 用配置目录下的 `daemon.lock` 串行化并发启动，服务端独占 `server.port` 并记录自己的 pid，所以重复调用、多个 pi 会话同时拉起都只会得到一个实例；换 `COMPUTER_BOARD_CONFIG` 或改端口则是另一个实例，两者不共享探活结果。后台实例的地址与 pid 记在 `daemon.json`，输出写 `daemon.log`，两者都与配置同目录。
 
 源码调试：
 
 ```bash
 npm install
 npm run dev                # 页面 http://127.0.0.1:5173，服务端 http://127.0.0.1:3000
-npm run build && npm start # 页面与 HTTP MCP 都由 127.0.0.1:3000 提供
+npm run build && npm start # 页面与 HTTP MCP 都由 127.0.0.1:3000 提供（被后台实例占用时先 computer-board stop）
 ```
 
 服务没有登录和权限控制，默认只监听 `server.host` 指定的回环地址，不要直接暴露公网。
 
 ## 配置
 
-配置文件默认在 `~/.computer/config.json`，样例见 [`config.example.json`](config.example.json)；服务与 pi extension 都读同一路径，用 `COMPUTER_BOARD_CONFIG=/absolute/path/config.json` 覆盖。修改配置的流程是停服务、编辑、`computer-board validate`、重启；探活结果只在内存，重启后重新检查。
+配置文件默认在 `~/.computer/config.json`，样例见 [`config.example.json`](config.example.json)；服务与 pi extension 都读同一路径，用 `COMPUTER_BOARD_CONFIG=/absolute/path/config.json` 覆盖。修改配置的流程是 `computer-board stop`、编辑、`computer-board validate`、再 `computer-board ensure`；探活结果只在内存，重启后重新检查。
 
 | 字段 | 机器 | 软件 |
 | --- | --- | --- |
@@ -77,13 +81,15 @@ npm run build && npm start # 页面与 HTTP MCP 都由 127.0.0.1:3000 提供
 
 ### pi extension
 
-同一个包提供 pi extension，把该服务的 HTTP MCP 按原样注册进 pi（工具名、入参、返回与错误完全一致）：
+同一个包提供 pi extension，注册三个只读工具 `list_machines`、`get_machine`、`get_software`，工具名、入参、返回与错误都与上面的 HTTP MCP 完全一致：
 
 ```bash
 pi install npm:@black942026/computer-board
 ```
 
-扩展加载时读取 `~/.computer/config.json`，用其中的 `server` 段推导服务地址；文件缺失或 `server` 段不完整时回落到 `http://127.0.0.1:3000/mcp`。配置路径与端口变化后重启 pi 会话生效。
+扩展加载时会在后台执行 `computer-board ensure`，工具调用时如果服务不在运行也会先拉起再重试一次，所以 pi 启动即拉起服务，不必另开终端；多个 pi 会话共享同一个实例，探活也只有一份。服务确实起不来时，工具返回 `{ error: { code: "INTERNAL_ERROR", message } }`，message 给出原因（配置缺失、日志路径等）。
+
+扩展读取 `~/.computer/config.json`（可用 `COMPUTER_BOARD_CONFIG` 覆盖），每次调用都重新读取，因此只改 `server.port` 时按 `computer-board stop && computer-board ensure` 重新拉起即可，工具定义不变，不用重启 pi 会话。
 
 ### 返回约定
 
@@ -104,7 +110,7 @@ pi install npm:@black942026/computer-board
 
 ## 页面
 
-`computer-board` 启动后，`dist/web` 存在时会在 `/` 提供只读页面，展示机器、软件、接入说明与探活状态，页面数据来自同一服务的只读内部接口（`/api/discovery`、`/api/query/*`、`/api/health/refresh`），仅供页面使用。
+`computer-board` 启动后，`dist/web` 存在时会在 `/` 提供只读页面，展示机器、软件、接入说明与探活状态。页面和 pi extension 都用同一组只读内部接口（`/api/discovery`、`/api/query/*`、`/api/health/refresh`），它们不是对外契约，只跟着页面与扩展的需要变化。
 
 ## 开发与发布
 
@@ -117,3 +123,5 @@ npm publish            # 发布前自动跑 check 与 build
 ```
 
 发布内容由 `files` 白名单限定为 `dist`、`extension`、`config.example.json`、`README.md`、`LICENSE`；`git` 忽略 `dist`、`node_modules`、`.computer` 与本地运行数据，配置与探活状态不会进入仓库。
+
+pi extension 运行时不 import 包内源码，只用宿主提供的 `typebox` 与 `@earendil-works/pi-coding-agent`（见 `peerDependencies`），靠 `dist/server/cli.js` 拉起服务。所以本地路径安装前要先 `npm run build`；源码调试时可以用 `COMPUTER_BOARD_CLI` 指定 CLI 的启动命令，例如 `COMPUTER_BOARD_CLI="node node_modules/tsx/dist/cli.mjs server/cli.ts"`。
