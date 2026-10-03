@@ -1,0 +1,132 @@
+{
+	"schemaVersion": 1,
+	"revision": 1,
+	"server": {
+		"host": "127.0.0.1",
+		"port": 3000,
+		"path": "/mcp"
+	},
+	"defaults": {
+		"intervalSeconds": 60,
+		"timeoutSeconds": 10,
+		"failureThreshold": 3,
+		"maxConcurrency": 4
+	},
+	"machines": [{
+			"id": "local",
+			"name": "本机",
+			"host": "localhost",
+			"desc": "日常工作最常用机器",
+			"instruction": "",
+			"tips": [
+        "local指的服务端所在机器不是客户端所在机器",
+				"禁止rm -rf /"
+			],
+			"enabled": true,
+			"dependOn": "",
+			"healthChecks": [{
+				"type": "local",
+				"required": true
+			}],
+			"software": [{
+					"id": "local-node",
+					"name": "Node.js",
+					"desc": "JavaScript/TypeScript 开发工具",
+					"instruction": "node --version",
+					"tips": ["无特殊说明"],
+					"enabled": true,
+					"dependOn": "已安装node并加入path",
+					"healthChecks": [{
+						"type": "bash",
+						"required": true,
+						"command": "node",
+						"args": ["--version"]
+					}]
+				},
+				{
+					"id": "local-docker",
+					"name": "Docker",
+					"desc": "容器",
+					"instruction": "使用标准docker命令即可",
+					"tips": ["不要删除卷"],
+					"enabled": true,
+					"dependOn": "已安装docker并且有账户权限",
+					"healthChecks": [{
+						"type": "bash",
+						"required": true,
+						"command": "docker",
+						"args": ["info"]
+					}]
+				},
+				{
+					"id": "local-codebuddy",
+					"name": "CodeBuddy",
+					"desc": "编码工具",
+					"instruction": "codebuddy --acp启动",
+					"tips": "使用acp连接",
+					"enabled": true,
+					"dependOn": "",
+					"healthChecks": [{
+						"type": "bash",
+						"required": true,
+						"command": "codebuddy",
+						"args": ["--version"]
+					}]
+				},
+				{
+					"id": "local-blender",
+					"name": "Blender",
+					"desc": "建模软件",
+					"instruction": "已安装官方blender mcp，连接端口xxx",
+					"tips": [],
+					"enabled": true,
+					"dependOn": "",
+					"healthChecks": [{
+						"type": "bash",
+						"required": true,
+						"command": "blender",
+						"args": ["--version"]
+					}]
+				}
+			]
+		},
+		{
+			"id": "remote",
+			"name": "remote-example",
+			"host": "root@192.168.0.1:22",
+			"desc": "远程机器",
+			"instruction": "ssh root@192.168.0.1即可，已开启免密",
+			"tips": [],
+			"enabled": false,
+			"dependOn": "",
+			"healthChecks": [{
+					"type": "bash",
+					"required": true,
+					"command": "ssh",
+					"args": ["root@192.168.0.1"]
+				},
+				{
+					"type": "bash",
+					"required": true,
+					"command": "ping",
+					"args": ["192.168.0.1"]
+				}
+			],
+			"software": [{
+				"id": "remote-comfyui",
+				"name": "comfyui",
+				"desc": "生图、抠图、动画、绑骨蒙皮",
+				"instruction": "工作流在xxx，输出在xxx",
+				"tips": ["http只绑定了127.0.0.1", "如果探活失败，可以重启"],
+				"enabled": true,
+				"dependOn": "",
+				"healthChecks": [{
+					"type": "bash",
+					"required": true,
+					"command": "curl",
+					"args": ["http://localhost:8188"]
+				}]
+			}]
+		}
+	]
+}

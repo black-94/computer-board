@@ -1,0 +1,87 @@
+{
+  "name": "@black942026/computer-board",
+  "version": "1.0.0",
+  "description": "手工维护机器与软件清单、周期性探活、只读查询的 HTTP MCP 服务，附带 pi extension",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/black-94/computer-board.git"
+  },
+  "homepage": "https://github.com/black-94/computer-board#readme",
+  "bugs": {
+    "url": "https://github.com/black-94/computer-board/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "mcp",
+    "mcp-server",
+    "inventory",
+    "health-check"
+  ],
+  "bin": {
+    "computer-board": "dist/server/cli.js"
+  },
+  "files": [
+    "dist",
+    "extension",
+    "config.example.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extension/index.ts"
+    ]
+  },
+  "scripts": {
+    "dev": "concurrently -k -n server,web \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "tsx watch server/cli.ts start",
+    "dev:web": "vite --config web/vite.config.ts",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && npm run typecheck && vite build --config web/vite.config.ts && tsc -p tsconfig.server.json",
+    "start": "node dist/server/cli.js start",
+    "init": "tsx server/cli.ts init",
+    "validate": "tsx server/cli.ts validate",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test",
+    "prepublishOnly": "npm run check && npm run build"
+  },
+  "dependencies": {
+    "@fastify/static": "^10.1.5",
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "fastify": "^5.12.5",
+    "zod": "^3.25.76"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.0.1",
+    "@types/node": "^26.6.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^10.0.5",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2",
+    "vitest": "^4.1.11"
+  }
+}
