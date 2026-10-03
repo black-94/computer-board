@@ -15,7 +15,31 @@ export class HealthEngine {
   private states = new Map<string, CheckState>();
   private timer?: NodeJS.Timeout;
   private active?: Promise<void>;
-  constructor(readonly config: BoardConfig, private backend: ProbeBackend = new DefaultProbeBackend(), private now: () => number = Date.now) {}
+  constructor(public config: BoardConfig, private backend: ProbeBackend = new DefaultProbeBackend(), private now: () => number = Date.now) {}
+  /** 配置里仍然存在的探活结果 key；其余（被删掉的机器或软件）在重载时清理。 */
+  private liveKeys(config = this.config) {
+    const keys = new Set<string>();
+    for (const machine of config.machines) {
+      machine.healthChecks.forEach((_, index) => keys.add(keyOf(machine.id, index)));
+      for (const software of machine.software) software.healthChecks.forEach((_, index) => keys.add(keyOf(software.id, index)));
+    }
+    return keys;
+  }
+  /**
+   * 热重载：换上新配置并立刻按新配置重跑一轮探活，未改动项沿用已有结果与失败计数。
+   * 调用方负责只传入校验通过的配置。换配置本身不等探活，调用返回时新配置已经生效；
+   * 重跑要等上一轮结束后才开始，否则新旧两轮会并发写同一批结果。
+   */
+  reload(config: BoardConfig) {
+    const previous = this.active;
+    this.config = config;
+    const live = this.liveKeys(config);
+    for (const key of this.states.keys()) if (!live.has(key)) this.states.delete(key);
+    void (async () => {
+      if (previous) await previous.catch(() => undefined);
+      await this.refresh(true);
+    })().catch(() => undefined);
+  }
   policy(check: HealthCheck) {
     return {
       intervalSeconds: check.intervalSeconds ?? this.config.defaults.intervalSeconds,

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { configPath, initConfig, loadConfig } from './config.js';
+import { configPath, initConfig, loadConfig, watchConfig } from './config.js';
 import { HealthEngine } from './health.js';
 import { BoardService } from './service.js';
 import { buildServer } from './http.js';
@@ -30,8 +30,17 @@ async function start() {
   // 先记录监听信息再放开探活：ensure 依赖它就绪，端口独占保证同时只有一个实例。
   await writeState({ pid: process.pid, startedAt: new Date().toISOString(), ...address(config) });
   console.log(`Computer Board: http://${host}:${port}（HTTP MCP: http://${host}:${port}${path}）`);
+  // 配置热重载：文件改好保存即生效；解析或校验失败只报错，继续用上一份可用配置。
+  // 监听先于 health.start() 建立：首轮探活要等不可达主机超时，期间改的配置同样要生效。
+  const watcher = watchConfig(configPath(), next => {
+    if (next.server.host !== host || next.server.port !== port) {
+      console.error(`server.host/port 由 ${host}:${port} 变为 ${next.server.host}:${next.server.port}，重启服务后生效`);
+    }
+    health.reload(next);
+    console.log(`配置已重新加载：${next.machines.length} 台机器，revision=${next.revision}`);
+  }, { onError: error => console.error(`配置重载失败，保留老配置：${error.message}`) });
   await health.start();
-  const close = async () => { await clearState(); await health.stop(); await app.close(); process.exit(0); };
+  const close = async () => { watcher.stop(); await clearState(); await health.stop(); await app.close(); process.exit(0); };
   process.on('SIGINT', () => { void close(); });
   process.on('SIGTERM', () => { void close(); });
 }

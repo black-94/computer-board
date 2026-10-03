@@ -91,10 +91,11 @@ function App() {
     <main><aside className="panel sidebar"><div className="row"><h2>机器列表</h2><label className="switch"><input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} /> 显示全部</label></div>
       <p className="hint">{showAll ? '显示全部已登记资源及状态' : '仅展示探活成功的机器和软件'}</p>
       {list.length === 0 && <p className="empty">{busy ? '正在加载…' : '暂无可用机器。可切换「显示全部」。'}</p>}
+      {/* 未勾选「显示全部」时接口只返回探活成功的项且不带 status，因此按探活成功展示。 */}
       {list.map((item, index) => <div className="machine" key={`${item.host}:${index}`}>
-        <div className="row"><button className="link mainlink" onClick={() => void selectMachine(item.host)}>{item.name}</button><Badge status={item.status} /></div>
+        <div className="row"><button className="link mainlink" onClick={() => void selectMachine(item.host)}>{item.name}</button><Badge status={item.status ?? 'healthy'} /></div>
         <p className="sub mono">{item.host}</p>
-        <div className="chips">{item.software.map((entry, i) => <button className="chip" key={i} onClick={() => void selectSoftware(item.host, entry.name)}>{entry.name} <Badge status={entry.status} /></button>)}</div>
+        <div className="chips">{item.software.map((entry, i) => <button className="chip" key={i} onClick={() => void selectSoftware(item.host, entry.name)}>{entry.name} <Badge status={entry.status ?? 'healthy'} /></button>)}</div>
       </div>)}</aside>
       <section className="panel detail">{error && <div className="error" role="alert">{error}</div>}
         {candidates.length > 0 && <div className="chips">{candidates.map(candidate => <button className="chip" key={candidate.machineId} onClick={() => void openMachine({ machineId: candidate.machineId })}>{candidate.name} · {candidate.host} · {candidate.machineId}</button>)}</div>}

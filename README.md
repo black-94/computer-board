@@ -32,7 +32,9 @@ npm run build && npm start # 页面与 HTTP MCP 都由 127.0.0.1:3000 提供（�
 
 ## 配置
 
-配置文件默认在 `~/.computer/config.json`，样例见 [`config.example.json`](config.example.json)；服务与 pi extension 都读同一路径，用 `COMPUTER_BOARD_CONFIG=/absolute/path/config.json` 覆盖。修改配置的流程是 `computer-board stop`、编辑、`computer-board validate`、再 `computer-board ensure`；探活结果只在内存，重启后重新检查。
+配置文件默认在 `~/.computer/config.json`，样例见 [`config.example.json`](config.example.json)；服务与 pi extension 都读同一路径，用 `COMPUTER_BOARD_CONFIG=/absolute/path/config.json` 覆盖。
+
+服务运行期间监听配置文件，保存后自动重新解析校验并生效（`revision`、`machines`、`defaults` 都包括），不需要重启；切换立即生效，重新探活接着在后台跑，不阻塞查询；解析或校验不通过时保留上一份可用配置继续服务，只在前台输出或 `daemon.log` 里给出原因，改好保存即恢复。`server.host`、`server.port` 决定监听地址，无法在运行中变更，改动后要 `computer-board stop && computer-board ensure` 才生效（服务日志会提示）。探活结果只在内存，重启后重新检查。
 
 | 字段 | 机器 | 软件 |
 | --- | --- | --- |
@@ -62,6 +64,8 @@ npm run build && npm start # 页面与 HTTP MCP 都由 127.0.0.1:3000 提供（�
 
 - `local`：Board 进程所在机器本身即视为在线，只能配在 `localhost` 机器上。
 - `bash`：在 Board 上执行的固定命令与参数，退出码为 0 记为成功，带 `--version` 或 `-v` 时还会从输出里观测版本号。命令可以是 `ping`、`curl`、`ssh` 等只读命令；需要检查远端时写成一次性的 `ssh host <命令>`，服务本身不做端口转发或驻留会话。
+
+配置热重载后会立即按新配置重跑一轮探活，未改动项沿用已有结果与失败计数，因此不会先掉回 `unknown` 再恢复。
 
 结果为 `healthy`（最近一次成功）、`degraded`（失败但未达阈值）、`unhealthy`（失败达到阈值）、`unknown`（未检查或未配置检查）、`disabled`（已停用）。机器状态由其必需检查聚合而成；默认列表严格按 `healthy` 过滤，不使用宽限期。
 

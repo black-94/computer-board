@@ -1,6 +1,6 @@
 {
   "name": "@black942026/computer-board",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "手工维护机器与软件清单、周期性探活、只读查询的 HTTP MCP 服务，附带 pi extension",
   "type": "module",
   "license": "MIT",

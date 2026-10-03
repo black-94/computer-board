@@ -1,7 +1,7 @@
-import { existsSync } from 'node:fs';
+import { existsSync, watch } from 'node:fs';
 import { readFile, writeFile, mkdir, rename, open } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ZodError } from 'zod';
 import { boardConfigSchema, type BoardConfig } from '../shared/schema.js';
@@ -33,6 +33,43 @@ export async function loadConfig(path = configPath()): Promise<BoardConfig> {
       : error instanceof Error ? error.message : '未知错误';
     throw new Error(`配置无效：${path}：${detail}`);
   }
+}
+
+export type ConfigWatcher = { stop(): void };
+
+/**
+ * 监听配置文件并在每次改动后重载：解析或校验失败时只报告原因，由调用方保留上一份可用配置。
+ * 监听所在目录而不是文件本身：编辑器保存普遍是「写临时文件再改名」，改名后原 inode 上的监听会失效；
+ * 同一目录还有 daemon.log 等运行数据，所以按文件名过滤，并用防抖合并写入过程中的多次事件。
+ */
+export function watchConfig(
+  path: string,
+  onChange: (config: BoardConfig) => void,
+  options: { debounceMs?: number; onError?: (error: Error) => void } = {},
+): ConfigWatcher {
+  const target = resolve(path);
+  const file = basename(target);
+  const debounceMs = options.debounceMs ?? 150;
+  const fail = (error: unknown) => options.onError?.(error instanceof Error ? error : new Error(String(error)));
+  let timer: NodeJS.Timeout | undefined;
+  let stopped = false;
+  const reload = () => {
+    if (stopped) return;
+    void loadConfig(target).then(config => { if (!stopped) onChange(config); }, fail);
+  };
+  const watcher = watch(dirname(target), { persistent: false }, (_event, changed) => {
+    if (changed && basename(changed) !== file) return;
+    clearTimeout(timer);
+    timer = setTimeout(reload, debounceMs);
+  });
+  watcher.on('error', fail);
+  return {
+    stop() {
+      stopped = true;
+      clearTimeout(timer);
+      watcher.close();
+    },
+  };
 }
 
 /** 从配置样例创建配置文件；文件已存在时不做任何改动。 */

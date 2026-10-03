@@ -6,7 +6,7 @@ import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { boardConfigSchema, parseMachineHost, type BoardConfig, type HealthCheck } from '../shared/schema.js';
-import { initConfig, loadConfig } from '../server/config.js';
+import { initConfig, loadConfig, watchConfig } from '../server/config.js';
 import { HealthEngine } from '../server/health.js';
 import { BoardService } from '../server/service.js';
 import { buildServer } from '../server/http.js';
@@ -129,6 +129,64 @@ describe('config', () => {
       await writeFile(file, JSON.stringify(broken));
       await expect(loadConfig(file)).rejects.toThrow();
     } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+});
+
+describe('config hot reload', () => {
+  const waitFor = async (predicate: () => boolean, timeoutMs = 5000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) return true;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    return predicate();
+  };
+
+  it('applies valid changes immediately and keeps the old config when the file is invalid', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'computer-board-reload-'));
+    const file = join(directory, 'config.json');
+    const initial = clone();
+    initial.revision = 1;
+    await writeFile(file, JSON.stringify(initial));
+    let probes = 0;
+    const { health, service } = setup(initial, new FakeBackend(() => { probes += 1; return success; }));
+    const errors: string[] = [];
+    const watcher = watchConfig(file, config => { void health.reload(config); },
+      { debounceMs: 20, onError: error => errors.push(error.message) });
+    try {
+      const updated = clone();
+      updated.revision = 2;
+      updated.machines[0].software = updated.machines[0].software.slice(0, 1);
+      await writeFile(file, JSON.stringify(updated));
+      expect(await waitFor(() => health.config.revision === 2)).toBe(true);
+      // 重载后按新配置立刻重跑一轮探活（后台进行），查询接口也改用新配置。
+      expect(await waitFor(() => service.listMachines({ showAll: true })[0]?.software.length === 1)).toBe(true);
+      expect(await waitFor(() => probes > 0)).toBe(true);
+      expect(await waitFor(() => service.listMachines({ showAll: true })[0].software[0].status === 'healthy')).toBe(true);
+
+      // 语法错误：保留老配置，只报告原因。
+      await writeFile(file, '{ "schemaVersion": 1,');
+      expect(await waitFor(() => errors.length > 0)).toBe(true);
+      expect(health.config.revision).toBe(2);
+
+      // 校验错误（ID 重复）：同样保留老配置。
+      const duplicate = clone();
+      duplicate.machines[1].id = duplicate.machines[0].id;
+      await writeFile(file, JSON.stringify(duplicate));
+      expect(await waitFor(() => errors.length > 1)).toBe(true);
+      expect(health.config.revision).toBe(2);
+      expect(health.config.machines[0].software).toHaveLength(1);
+
+      // 改回合法内容后自动生效，不需要重启。
+      const fixed = clone();
+      fixed.revision = 3;
+      await writeFile(file, JSON.stringify(fixed));
+      expect(await waitFor(() => health.config.revision === 3)).toBe(true);
+      expect(service.getMachine({ machine: { machineId: 'local' } }).software).toHaveLength(4);
+    } finally {
+      watcher.stop();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
 
