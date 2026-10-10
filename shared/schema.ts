@@ -81,7 +81,19 @@ export const boardConfigSchema = rawBoardSchema.superRefine((config, ctx) => {
   });
 });
 
+/** search_machine 省略 limit 时的返回条数上限；由服务端兜底，不放进 schema 默认值。 */
+export const SEARCH_MACHINE_DEFAULT_LIMIT = 3;
 export const listMachinesInputSchema = z.object({ showAll: z.boolean().optional() }).strict();
+/**
+ * 搜索入参：query 必填且不能为空或纯空白；showAll 语义与列表一致。
+ * limit 省略由服务端取默认值；显式给出时必须是正整数（拒绝 0、负数、小数、字符串、null、boolean、NaN/Infinity），
+ * 不设人为上限。strict 拒绝未知字段。
+ */
+export const searchMachineInputSchema = z.object({
+  query: text,
+  showAll: z.boolean().optional(),
+  limit: z.number().int().min(1).finite().optional(),
+}).strict();
 export const machineSelectorSchema = z.union([
   z.object({ machineId: text }).strict(),
   z.object({ host: text }).strict(),

@@ -16,6 +16,9 @@ export type SoftwareSummary = { name: string; status?: Status };
 export type MachineSummary = { name: string; host: string; status?: Status; software: SoftwareSummary[] };
 export type MachineList = MachineSummary[];
 
+/** 机器搜索结果：只返回定位字段与 BM25 分数；showAll 时附 status。 */
+export type MachineSearchHit = { machineId: string; name: string; host: string; score: number; status?: Status };
+
 /** 单条探活配置的公开信息与状态；为空的可选字段不返回。 */
 export type CheckView = { type: CheckType; required: boolean; command?: string; args?: string[]; health: HealthView };
 

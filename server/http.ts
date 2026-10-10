@@ -22,6 +22,7 @@ export async function buildServer(service: BoardService, options: { staticFiles?
     return service.listMachines({ showAll: params.showAll === 'true' });
   });
   app.post('/api/query/machine', request => service.getMachine(request.body));
+  app.post('/api/query/machine/search', request => service.searchMachines(request.body));
   app.post('/api/query/software', request => service.getSoftware(request.body));
   app.post('/api/health/refresh', async request => {
     if (request.body && Object.keys(request.body as object).length) throw new QueryError('INVALID_ARGUMENT', '不接受临时检查参数');

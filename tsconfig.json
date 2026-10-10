@@ -12,5 +12,5 @@
     "types": ["node", "vite/client"],
     "noEmit": true
   },
-  "include": ["shared/**/*.ts", "server/**/*.ts", "extension/**/*.ts", "web/**/*.ts", "web/**/*.tsx", "tests/**/*.ts", "vitest.config.ts"]
+  "include": ["index.ts", "shared/**/*.ts", "server/**/*.ts", "extension/**/*.ts", "web/**/*.ts", "web/**/*.tsx", "tests/**/*.ts", "vitest.config.ts"]
 }

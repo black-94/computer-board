@@ -158,8 +158,31 @@ const softwareTool = defineTool({
   },
 });
 
+const searchTool = defineTool({
+  name: 'search_machine',
+  label: '搜索机器',
+  description: '按关键词在机器 id、name、host 上做 BM25 相关性搜索并按分数降序返回，返回得分最高的前 limit 条（limit 省略时为 3，须为正整数）。默认只搜探活成功的机器，showAll=true 搜索全部并附 status；无匹配返回空数组。',
+  promptSnippet: '按关键词搜索机器',
+  parameters: Type.Object({
+    query: Type.String({ minLength: 1 }),
+    showAll: Type.Optional(Type.Boolean()),
+    limit: Type.Optional(Type.Integer({ minimum: 1, description: '最多返回的机器条数，默认 3；必须是正整数。' })),
+  }, { additionalProperties: false }),
+  annotations: { readOnlyHint: true },
+  async execute(_id, params, signal) {
+    return result(await query(configPath(), '/api/query/machine/search', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: params.query,
+        ...(params.showAll !== undefined ? { showAll: params.showAll } : {}),
+        ...(params.limit !== undefined ? { limit: params.limit } : {}),
+      }),
+    }, signal));
+  },
+});
+
 /**
- * pi 扩展：注册三个只读工具，直接调用服务端的只读接口。
+ * pi 扩展：注册四个只读工具，直接调用服务端的只读接口。
  * 扩展加载时后台确保服务在运行：服务是有状态的单例进程，多个 pi 会话共享同一份探活结果。
  */
 export default function computerBoardExtension(pi: ExtensionAPI) {
@@ -168,4 +191,5 @@ export default function computerBoardExtension(pi: ExtensionAPI) {
   pi.registerTool(listTool);
   pi.registerTool(machineTool);
   pi.registerTool(softwareTool);
+  pi.registerTool(searchTool);
 }

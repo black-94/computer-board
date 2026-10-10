@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import {
-  getMachineInputSchema, getSoftwareInputSchema, listMachinesInputSchema,
+  getMachineInputSchema, getSoftwareInputSchema, listMachinesInputSchema, searchMachineInputSchema,
+  SEARCH_MACHINE_DEFAULT_LIMIT,
   type Machine, type MachineSelector, type Software, type SoftwareSelector,
 } from '../shared/schema.js';
-import type { CheckView, MachineDetail, MachineList, MachineView, SoftwareDetail, SoftwareView } from '../shared/api.js';
+import type { CheckView, MachineDetail, MachineList, MachineSearchHit, MachineView, SoftwareDetail, SoftwareView } from '../shared/api.js';
 import { HealthEngine } from './health.js';
 import { QueryError } from './errors.js';
 
@@ -45,6 +46,27 @@ export class BoardService {
         }),
       }];
     });
+  }
+  /**
+   * 按关键词对机器 id、name、host 做 BM25 相关性搜索并降序返回；只读内存状态，不触发探活。
+   * showAll=false（默认）只搜探活成功的机器，true 搜索全部并附 status。无匹配返回空数组。
+   * limit 省略时取默认值 3；返回 min(limit, 命中数) 条。
+   * 先按健康状态过滤候选，再用全部候选语料评分/降序/同分稳定排序，最后截取 Top N——
+   * 先截候选会改变 IDF/avgdl 与排名，因此只在排序后 slice；limit 不影响被保留命中项的 score。
+   * 复用 HealthEngine 预建的索引：查询只分词关键词，不重建机器词频；健康状态变化只改变候选集合。
+   */
+  searchMachines(input: unknown): MachineSearchHit[] {
+    const { query, showAll = false, limit = SEARCH_MACHINE_DEFAULT_LIMIT } = parse(searchMachineInputSchema, input);
+    const machines = this.health.config.machines;
+    const candidates: number[] = [];
+    for (let index = 0; index < machines.length; index += 1) {
+      if (!showAll && this.health.machineView(machines[index]).status !== 'healthy') continue;
+      candidates.push(index);
+    }
+    return this.health.searchIndex.search(query, candidates).slice(0, limit).map(({ document, score }) => ({
+      machineId: document.id, name: document.name, host: document.host, score,
+      ...(showAll ? { status: this.health.machineView(document).status } : {}),
+    }));
   }
   private machineView(machine: Machine): MachineView {
     return {

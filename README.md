@@ -1,6 +1,6 @@
 # Computer Board
 
-手工维护机器与软件清单、周期性探活、只读查询的后台服务，同时以 HTTP MCP 和 pi extension（三个同名只读工具）提供给 agent。
+手工维护机器与软件清单、周期性探活、只读查询的后台服务，同时以 HTTP MCP 和 pi extension（四个同名只读工具）提供给 agent。
 
 服务只回答「现在有哪些机器和软件可用、怎么接入」；它不执行任何业务操作，不做 SSH 转发或端口转发，不代理远程调用，也不修改配置。
 
@@ -34,7 +34,7 @@ npm run build && npm start # 页面与 HTTP MCP 都由 127.0.0.1:3000 提供（�
 
 配置文件默认在 `~/.computer/config.json`，样例见 [`config.example.json`](config.example.json)；服务与 pi extension 都读同一路径，用 `COMPUTER_BOARD_CONFIG=/absolute/path/config.json` 覆盖。
 
-服务运行期间监听配置文件，保存后自动重新解析校验并生效（`revision`、`machines`、`defaults` 都包括），不需要重启；切换立即生效，重新探活接着在后台跑，不阻塞查询；解析或校验不通过时保留上一份可用配置继续服务，只在前台输出或 `daemon.log` 里给出原因，改好保存即恢复。`server.host`、`server.port` 决定监听地址，无法在运行中变更，改动后要 `computer-board stop && computer-board ensure` 才生效（服务日志会提示）。探活结果只在内存，重启后重新检查。
+服务运行期间监听配置文件，保存后自动重新解析校验并生效（`revision`、`machines`、`defaults` 都包括），搜索索引也随新配置同步重建，不需要重启；切换立即生效，重新探活接着在后台跑，不阻塞查询；解析或校验不通过时保留上一份可用配置与对应索引继续服务，只在前台输出或 `daemon.log` 里给出原因，改好保存即恢复。`server.host`、`server.port` 决定监听地址，无法在运行中变更，改动后要 `computer-board stop && computer-board ensure` 才生效（服务日志会提示）。探活结果只在内存，重启后重新检查。
 
 | 字段 | 机器 | 软件 |
 | --- | --- | --- |
@@ -78,14 +78,19 @@ npm run build && npm start # 页面与 HTTP MCP 都由 127.0.0.1:3000 提供（�
 | 工具 | 入参 | 返回 |
 | --- | --- | --- |
 | `list_machines` | `{ showAll?: boolean }` | 机器简要列表：`name`、`host` 与软件名，`showAll=true` 时每项带 `status` |
+| `search_machine` | `{ query: string, showAll?: boolean, limit?: number }` | 按关键词搜索机器：`machineId`、`name`、`host`、`score`（BM25 分数，降序），最多返回 `min(limit, 命中数)` 条，`showAll=true` 时每项带 `status` |
 | `get_machine` | `{ machine: { machineId } \| { host } }` | 单台机器详情：描述、使用说明、注意事项、依赖、探活与软件索引 |
 | `get_software` | `{ machine, software: { softwareId } \| { name } }` | 软件详情：描述、接入方式、注意事项、依赖、观测版本、探活与所属机器 |
+
+`search_machine` 是唯一的模糊查询：只用关键词在机器的 `id`、`name`、`host` 三个字段上做 BM25 相关性排序，不搜索 `desc`、`instruction`、`software` 等字段，不做子串/正则匹配。`query` 必填；空串、纯空白、错误类型或未知字段都会被拒绝，但两条路径的表现不同——HTTP 与 pi extension 走内部路由，返回 `{ "error": { "code": "INVALID_ARGUMENT" } }`；HTTP MCP 由 SDK 用同一份严格 schema 在入参校验阶段拒绝，返回 `isError: true` 的工具错误（文本形如 `Input validation error: ...`），不会进入服务端 handler。默认只搜探活成功的机器，`showAll=true` 搜索全部并附 `status`；无匹配返回空数组。`limit` 控制返回条数：省略时为 `3`，显式给出时必须是正整数（`0`、负数、小数、字符串、`null`、`boolean`、`NaN`/`Infinity` 都会被拒绝），不设人为上限，实际返回 `min(limit, 命中数)` 条。排序先按健康状态过滤候选，再用全部候选语料做 BM25 评分、降序并保持同分配置顺序，最后截取前 `limit` 条：不会先截候选而改变分数或排名，截取也不改变被保留命中项的 `score`。分词先做大小写归一化，再按连续字母数字与单个汉字切分（`-`、`_`、`.`、`:`、`/`、`@` 等 id/host 分隔符都算边界），因此 `remote-example`、`root@192.168.0.1:22` 的用户名/IP/端口、以及中文名`本机`都能命中。分数始终为正的有限值，同分按配置顺序稳定排列；搜索只读内存缓存，不触发探活。BM25 使用 `k1=1.2`、`b=0.75`，IDF 取恒正形式避免常见词出现负分。
+
+搜索索引的建立时机与存储：服务在启动（构造 `HealthEngine`）与每次配置热重载时各建立一次，配置统一从 `HealthEngine` 进入，所以 CLI 与进程内测试走的是同一条路径；首个查询不会临时构建。索引只放在内存里（`Bm25Index` 实例，构建时预计算每台机器 `id`/`name`/`host` 的词频、文档长度与倒排表，并整体替换旧实例而非累积），不落盘、不做磁盘缓存、也不引入新依赖。查询时只对关键词分词，按当前候选集合复用这些缓存计算 N/df/avgdl，不重新分词机器文本、不重建词频/长度/倒排表；`showAll` 与健康状态过滤只改变候选集合，健康状态变化不重建索引。
 
 接口说明随 MCP 协议一并给出，不额外提供 describe 之类的工具：每个工具自带描述与入参 schema，`initialize` 返回的 instructions 说明服务边界、返回约定、状态含义与错误码。
 
 ### pi extension
 
-同一个包提供 pi extension，注册三个只读工具 `list_machines`、`get_machine`、`get_software`，工具名、入参、返回与错误都与上面的 HTTP MCP 完全一致：
+同一个包提供 pi extension，注册四个只读工具 `list_machines`、`search_machine`、`get_machine`、`get_software`：工具名、入参 schema 与有效调用的返回与上面的 HTTP MCP 一致。区别在错误路径——pi extension 走内部 HTTP 路由，非法入参返回 `INVALID_ARGUMENT` 错误体；HTTP MCP 的非法入参由 SDK 在入参校验阶段拒绝（`isError: true`），见上面对 `search_machine` 的说明：
 
 ```bash
 pi install npm:@black942026/computer-board
@@ -126,6 +131,8 @@ npm pack --dry-run     # 确认发布内容
 npm publish            # 发布前自动跑 check 与 build
 ```
 
-发布内容由 `files` 白名单限定为 `dist`、`extension`、`config.example.json`、`README.md`、`LICENSE`；`git` 忽略 `dist`、`node_modules`、`.computer` 与本地运行数据，配置与探活状态不会进入仓库。
+发布内容由 `files` 白名单限定为 `index.ts`、`dist`、`extension`、`config.example.json`、`README.md`、`LICENSE`；`git` 忽略 `dist`、`node_modules`、`.computer` 与本地运行数据，配置与探活状态不会进入仓库。
 
-pi extension 运行时不 import 包内源码，只用宿主提供的 `typebox` 与 `@earendil-works/pi-coding-agent`（见 `peerDependencies`），靠 `dist/server/cli.js` 拉起服务。所以本地路径安装前要先 `npm run build`；源码调试时可以用 `COMPUTER_BOARD_CLI` 指定 CLI 的启动命令，例如 `COMPUTER_BOARD_CLI="node node_modules/tsx/dist/cli.mjs server/cli.ts"`。
+本地基准（`node_modules/tsx` 直接跑源码，仅示意、非性能承诺）：2000 台机器建索引约 10ms；对 2000 台机器各跑 10000 次关键词查询，复用索引约 4.3s，而每次临时重算的旧公式约 42s。
+
+pi extension 以根目录 `index.ts` 为导出入口，转导出 `extension/index.ts` 的默认扩展函数；安装后显示为 `@black942026/computer-board`，不带 `:extension` 后缀。扩展实现不 import 服务端源码，只用宿主提供的 `typebox` 与 `@earendil-works/pi-coding-agent`（见 `peerDependencies`），靠 `dist/server/cli.js` 拉起服务。所以本地路径安装前要先 `npm run build`；源码调试时可以用 `COMPUTER_BOARD_CLI` 指定 CLI 的启动命令，例如 `COMPUTER_BOARD_CLI="node node_modules/tsx/dist/cli.mjs server/cli.ts"`。

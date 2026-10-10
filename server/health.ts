@@ -1,6 +1,7 @@
 import type { BoardConfig, HealthCheck, Machine, Software } from '../shared/schema.js';
 import type { HealthView, Status } from '../shared/api.js';
 import { DefaultProbeBackend, type ProbeBackend, type ProbeResult } from './probes.js';
+import { buildSearchIndex, type Bm25Index, type SearchDocument, type SearchIndexBuilder } from './search.js';
 
 const unknownHealth = (reasonCode?: string): HealthView => ({ status: 'unknown', ...(reasonCode ? { reasonCode } : {}) });
 const disabledHealth = (): HealthView => ({ status: 'disabled', reasonCode: 'DISABLED' });
@@ -11,11 +12,25 @@ type Job = { machine: Machine; software?: Software; check: HealthCheck; index: n
 /** 机器与软件的 ID 全局唯一，因此 ownerId 加下标即可定位一条探活结果。 */
 const keyOf = (ownerId: string, index: number) => `${ownerId}:${index}`;
 
+/** 搜索索引只收录机器的 id、name、host 三个字段。 */
+const searchDocumentOf = (machine: Machine): SearchDocument => ({ id: machine.id, name: machine.name, host: machine.host });
+
 export class HealthEngine {
   private states = new Map<string, CheckState>();
   private timer?: NodeJS.Timeout;
   private active?: Promise<void>;
-  constructor(public config: BoardConfig, private backend: ProbeBackend = new DefaultProbeBackend(), private now: () => number = Date.now) {}
+  private searchIndexValue: Bm25Index<Machine>;
+  constructor(
+    public config: BoardConfig,
+    private backend: ProbeBackend = new DefaultProbeBackend(),
+    private now: () => number = Date.now,
+    private buildIndex: SearchIndexBuilder = buildSearchIndex,
+  ) {
+    // 配置是搜索索引的唯一来源：构造时立即按当前配置建好，首个查询不触发 lazy build。
+    this.searchIndexValue = this.buildIndex(config.machines, searchDocumentOf);
+  }
+  /** 当前配置对应的 BM25 索引；只读访问，配置重载时整体替换成新实例。 */
+  get searchIndex() { return this.searchIndexValue; }
   /** 配置里仍然存在的探活结果 key；其余（被删掉的机器或软件）在重载时清理。 */
   private liveKeys(config = this.config) {
     const keys = new Set<string>();
@@ -27,12 +42,16 @@ export class HealthEngine {
   }
   /**
    * 热重载：换上新配置并立刻按新配置重跑一轮探活，未改动项沿用已有结果与失败计数。
-   * 调用方负责只传入校验通过的配置。换配置本身不等探活，调用返回时新配置已经生效；
+   * 调用方负责只传入校验通过的配置。先构建新索引，成功后才连续切换 config 与索引，
+   * 因此构建失败时旧配置、旧索引与探活状态都保持原样（异常向上抛出）；
+   * 不论 revision 是否变化都同步重建索引（机器可能增删改），旧实例被替换而非累积。
    * 重跑要等上一轮结束后才开始，否则新旧两轮会并发写同一批结果。
    */
   reload(config: BoardConfig) {
+    const index = this.buildIndex(config.machines, searchDocumentOf);
     const previous = this.active;
     this.config = config;
+    this.searchIndexValue = index;
     const live = this.liveKeys(config);
     for (const key of this.states.keys()) if (!live.has(key)) this.states.delete(key);
     void (async () => {
